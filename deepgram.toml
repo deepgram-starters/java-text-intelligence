@@ -1,0 +1,58 @@
+[meta]
+title = "Java Text Intelligence Starter"
+description = "Get started using Deepgram's Text Intelligence with this Java demo app"
+author = "Deepgram DX Team <devrel@deepgram.com> (https://developers.deepgram.com)"
+repository = "https://github.com/deepgram-starters/java-text-intelligence"
+useCase = "text-intelligence"
+language = "Java"
+framework = "Javalin"
+sdk = "N/A"
+tags = ["text-intelligence", "text-analysis", "summarization", "topics", "sentiment", "java", "javalin"]
+
+# Check prerequisites
+[check]
+command = ["command -v git", "command -v java", "command -v mvn", "command -v pnpm"]
+message = "Prerequisites checked"
+
+# Install dependencies
+[install.pre]
+command = "git submodule update --init --recursive"
+message = "Submodules initialized"
+
+[install]
+command = ["mvn dependency:resolve", "cd frontend && corepack pnpm install"]
+message = "Dependencies installed"
+
+[install.config]
+sample = "sample.env"
+output = ".env"
+
+# Start application
+[start.pre]
+command = ["test -f .env || echo 'Error: .env file not found'", "test -d frontend/.git || echo 'Error: Frontend submodule not initialized'"]
+message = "Pre-flight checks complete"
+
+[start]
+command = ["mvn compile exec:java -Dexec.mainClass=com.deepgram.starter.App", "cd frontend && corepack pnpm run dev -- --port 8080 --no-open"]
+parallel = true
+message = "Application running on http://localhost:8080"
+
+# Update submodules
+[update]
+command = "git submodule update --remote --merge"
+message = "Submodules updated"
+
+# Clean artifacts
+[clean]
+command = ["rm -rf target", "rm -rf frontend/node_modules", "rm -rf frontend/dist"]
+message = "Build artifacts cleaned"
+
+# Testing
+[test]
+command = "bash contracts/tests/run-text-intelligence-app.sh"
+message = "Conformance tests complete"
+
+# Eject frontend and contracts submodules for standalone development
+[eject-frontend]
+command = "make eject-frontend"
+message = "Frontend ejected successfully"
