@@ -286,6 +286,7 @@ public class App {
      * - Error (4XX): JSON error response matching contract format
      */
     private static void handleTextIntelligence(Context ctx) {
+        String url = null;
         try {
             // Parse JSON body
             JsonNode reqBody;
@@ -299,7 +300,7 @@ public class App {
 
             String text = reqBody.has("text") && !reqBody.get("text").isNull()
                     ? reqBody.get("text").asText() : null;
-            String url = reqBody.has("url") && !reqBody.get("url").isNull()
+            url = reqBody.has("url") && !reqBody.get("url").isNull()
                     ? reqBody.get("url").asText() : null;
 
             // Validate: exactly one of text or url
@@ -394,8 +395,10 @@ public class App {
             // Handle non-2xx from Deepgram
             if (dgResp.statusCode() < 200 || dgResp.statusCode() >= 300) {
                 log.error("Deepgram API Error (status {}): {}", dgResp.statusCode(), dgResp.body());
+                String errCode = (url != null && !url.isEmpty()) ? "INVALID_URL" : "INVALID_TEXT";
+                String errMsg = (url != null && !url.isEmpty()) ? "Failed to process URL" : "Failed to process text";
                 ctx.status(400);
-                ctx.json(processingError("INVALID_TEXT", "Failed to process text"));
+                ctx.json(processingError(errCode, errMsg));
                 return;
             }
 
@@ -412,7 +415,7 @@ public class App {
             log.error("Text Intelligence Error", e);
 
             // Determine appropriate error code
-            String errorCode = "INVALID_TEXT";
+            String errorCode = (url != null && !url.isEmpty()) ? "INVALID_URL" : "INVALID_TEXT";
             int statusCode = 500;
 
             String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
@@ -421,6 +424,9 @@ public class App {
                 statusCode = 400;
             } else if (msg.contains("too long")) {
                 errorCode = "TEXT_TOO_LONG";
+                statusCode = 400;
+            } else if (url != null && !url.isEmpty()) {
+                errorCode = "INVALID_URL";
                 statusCode = 400;
             }
 
