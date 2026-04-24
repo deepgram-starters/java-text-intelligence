@@ -2,7 +2,7 @@
  * Java Text Intelligence Starter - Backend Server
  *
  * Simple REST API server providing text intelligence analysis
- * powered by Deepgram's Text Intelligence service.
+ * powered by the Deepgram Java SDK.
  *
  * Key Features:
  * - Contract-compliant API endpoint: POST /api/text-intelligence
@@ -10,8 +10,13 @@
  * - Supports multiple intelligence features: summarization, topics, sentiment, intents
  * - CORS-enabled for frontend communication
  * - JWT session auth with rate limiting (production only)
+ * - Uses Deepgram Java SDK for text analysis
  */
 package com.deepgram.starter;
+
+// ============================================================================
+// SECTION 1: IMPORTS
+// ============================================================================
 
 import com.auth0.jwt.JWT;
 import com.auth0.jwt.algorithms.Algorithm;
@@ -20,55 +25,70 @@ import com.auth0.jwt.exceptions.TokenExpiredException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.toml.TomlMapper;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
 import io.javalin.http.Context;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.deepgram.DeepgramClient;
+import com.deepgram.core.DeepgramHttpException;
+import com.deepgram.resources.read.v1.text.requests.TextAnalyzeRequest;
+import com.deepgram.resources.read.v1.text.types.TextAnalyzeRequestSummarize;
+import com.deepgram.types.ReadV1Request;
+import com.deepgram.types.ReadV1RequestText;
+import com.deepgram.types.ReadV1RequestUrl;
+import com.deepgram.types.ReadV1Response;
+
 import java.io.File;
 import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 // ============================================================================
-// MAIN APPLICATION
+// SECTION 2: MAIN APPLICATION
 // ============================================================================
 
 public class App {
 
     private static final Logger log = LoggerFactory.getLogger(App.class);
-    private static final ObjectMapper jsonMapper = new ObjectMapper();
+
+    /**
+     * Shared Jackson ObjectMapper for JSON serialization.
+     * The Jdk8Module is registered to support serialization of Java 8
+     * Optional types used throughout the Deepgram SDK response objects.
+     */
+    private static final ObjectMapper jsonMapper = new ObjectMapper()
+            .registerModule(new Jdk8Module());
     private static final TomlMapper tomlMapper = new TomlMapper();
-    private static final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
 
     // ========================================================================
-    // CONFIGURATION
+    // SECTION 3: CONFIGURATION
     // ========================================================================
 
     private static int port;
     private static String host;
     private static String apiKey;
+    private static DeepgramClient dgClient;
     private static Algorithm jwtAlgorithm;
 
     /** JWT expiry time (1 hour) */
     private static final long JWT_EXPIRY_SECONDS = 3600;
 
     // ========================================================================
-    // STARTUP
+    // SECTION 4: STARTUP
     // ========================================================================
 
+    /**
+     * Application entry point. Loads configuration, validates the API key,
+     * initializes the Deepgram SDK client, and starts the Javalin HTTP server.
+     *
+     * @param args Command-line arguments (unused)
+     */
     public static void main(String[] args) {
         // Load .env file (ignore if not present)
         Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
@@ -80,8 +100,11 @@ public class App {
         // Initialize session secret
         initSessionSecret(dotenv);
 
-        // Load Deepgram API key
+        // Load Deepgram API key and initialize SDK client
         apiKey = loadApiKey(dotenv);
+        dgClient = DeepgramClient.builder()
+                .apiKey(apiKey)
+                .build();
 
         // Create and configure Javalin app
         Javalin app = Javalin.create(config -> {
@@ -137,18 +160,17 @@ public class App {
 
         System.out.println();
         System.out.println("=".repeat(70));
-        System.out.printf("Backend API running at http://localhost:%d%n", port);
-        System.out.println();
-        System.out.println("GET  /api/session");
-        System.out.println("POST /api/text-intelligence (auth required)");
-        System.out.println("GET  /api/metadata");
-        System.out.println("GET  /health");
+        System.out.printf("  Backend API running at http://localhost:%d%n", port);
+        System.out.println("  GET  /api/session");
+        System.out.println("  POST /api/text-intelligence (auth required)");
+        System.out.println("  GET  /api/metadata");
+        System.out.println("  GET  /health");
         System.out.println("=".repeat(70));
         System.out.println();
     }
 
     // ========================================================================
-    // SESSION AUTH — JWT tokens for production security
+    // SECTION 5: SESSION AUTH — JWT tokens for production security
     // ========================================================================
 
     /**
@@ -203,7 +225,7 @@ public class App {
     }
 
     // ========================================================================
-    // API KEY LOADING
+    // SECTION 6: API KEY LOADING
     // ========================================================================
 
     /**
@@ -226,7 +248,7 @@ public class App {
     }
 
     // ========================================================================
-    // ROUTE HANDLERS
+    // SECTION 7: ROUTE HANDLERS
     // ========================================================================
 
     /**
@@ -277,6 +299,8 @@ public class App {
      * POST /api/text-intelligence
      *
      * Contract-compliant text intelligence endpoint per starter-contracts specification.
+     * Uses the Deepgram Java SDK for text analysis.
+     *
      * Accepts:
      * - Query parameters: summarize, topics, sentiment, intents, language (all optional)
      * - Body: JSON with either text or url field (required, not both)
@@ -355,61 +379,52 @@ public class App {
                 return;
             }
 
-            // Build Deepgram API URL with query parameters
-            StringBuilder dgUrl = new StringBuilder("https://api.deepgram.com/v1/read?language=");
-            dgUrl.append(URLEncoder.encode(language, StandardCharsets.UTF_8));
-
-            if ("true".equals(summarize) || "v2".equals(summarize)) {
-                dgUrl.append("&summarize=v2");
-            }
-            if ("true".equals(topics)) {
-                dgUrl.append("&topics=true");
-            }
-            if ("true".equals(sentiment)) {
-                dgUrl.append("&sentiment=true");
-            }
-            if ("true".equals(intents)) {
-                dgUrl.append("&intents=true");
-            }
-
-            // Build request body for Deepgram — send text or url as JSON
-            Map<String, String> dgBody = new LinkedHashMap<>();
+            // Build the request body — either text or URL
+            ReadV1Request requestBody;
             if (url != null && !url.isEmpty()) {
-                dgBody.put("url", url);
+                requestBody = ReadV1Request.of(
+                        ReadV1RequestUrl.builder().url(url).build());
             } else {
-                dgBody.put("text", text);
-            }
-            String dgBodyJson = jsonMapper.writeValueAsString(dgBody);
-
-            // Call Deepgram Read API
-            HttpRequest dgReq = HttpRequest.newBuilder()
-                    .uri(URI.create(dgUrl.toString()))
-                    .timeout(Duration.ofSeconds(30))
-                    .header("Authorization", "Token " + apiKey)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(dgBodyJson))
-                    .build();
-
-            HttpResponse<String> dgResp = httpClient.send(dgReq, HttpResponse.BodyHandlers.ofString());
-
-            // Handle non-2xx from Deepgram
-            if (dgResp.statusCode() < 200 || dgResp.statusCode() >= 300) {
-                log.error("Deepgram API Error (status {}): {}", dgResp.statusCode(), dgResp.body());
-                String errCode = (url != null && !url.isEmpty()) ? "INVALID_URL" : "INVALID_TEXT";
-                String errMsg = (url != null && !url.isEmpty()) ? "Failed to process URL" : "Failed to process text";
-                ctx.status(400);
-                ctx.json(processingError(errCode, errMsg));
-                return;
+                requestBody = ReadV1Request.of(
+                        ReadV1RequestText.builder().text(text).build());
             }
 
-            // Parse Deepgram response to extract results
-            JsonNode dgResult = jsonMapper.readTree(dgResp.body());
-            JsonNode results = dgResult.has("results") ? dgResult.get("results") : jsonMapper.createObjectNode();
+            // Build the TextAnalyzeRequest with query parameters via SDK
+            TextAnalyzeRequest.Builder builder = (TextAnalyzeRequest.Builder)
+                    TextAnalyzeRequest.builder().body(requestBody);
 
-            // Return results
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("results", jsonMapper.treeToValue(results, Object.class));
-            ctx.json(response);
+            builder.language(language);
+
+            if ("true".equalsIgnoreCase(summarize) || "v2".equalsIgnoreCase(summarize)) {
+                builder.summarize(TextAnalyzeRequestSummarize.V2);
+            }
+            if ("true".equalsIgnoreCase(topics)) {
+                builder.topics(true);
+            }
+            if ("true".equalsIgnoreCase(sentiment)) {
+                builder.sentiment(true);
+            }
+            if ("true".equalsIgnoreCase(intents)) {
+                builder.intents(true);
+            }
+
+            TextAnalyzeRequest request = builder.build();
+
+            // Call the Deepgram API via SDK
+            ReadV1Response response = dgClient.read().v1().text().analyze(request);
+
+            // Return results — serialize the SDK response to match contract format
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("results", jsonMapper.convertValue(response.getResults(), Map.class));
+            ctx.json(result);
+
+        } catch (DeepgramHttpException e) {
+            // Handle Deepgram API errors with their original status code
+            log.error("Deepgram API Error (status {}): {}", e.statusCode(), e.getMessage());
+            String errCode = (url != null && !url.isEmpty()) ? "INVALID_URL" : "INVALID_TEXT";
+            String errMsg = (url != null && !url.isEmpty()) ? "Failed to process URL" : "Failed to process text";
+            ctx.status(400);
+            ctx.json(processingError(errCode, errMsg));
 
         } catch (Exception e) {
             log.error("Text Intelligence Error", e);
@@ -436,7 +451,7 @@ public class App {
     }
 
     // ========================================================================
-    // HELPER FUNCTIONS
+    // SECTION 8: HELPER FUNCTIONS
     // ========================================================================
 
     /**
