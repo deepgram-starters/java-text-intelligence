@@ -19,6 +19,13 @@
     </properties>
 
     <dependencies>
+        <!-- Deepgram Java SDK (provides client.read().v1().text().analyze(...)) -->
+        <dependency>
+            <groupId>com.deepgram</groupId>
+            <artifactId>deepgram-java-sdk</artifactId>
+            <version>0.7.1</version>
+        </dependency>
+
         <!-- Javalin web framework -->
         <dependency>
             <groupId>io.javalin</groupId>

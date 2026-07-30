@@ -6,7 +6,7 @@ repository = "https://github.com/deepgram-starters/java-text-intelligence"
 useCase = "text-intelligence"
 language = "Java"
 framework = "Javalin"
-sdk = "N/A"
+sdk = "deepgram-java-sdk"
 tags = ["text-intelligence", "text-analysis", "summarization", "topics", "sentiment", "java", "javalin"]
 
 # Check prerequisites
