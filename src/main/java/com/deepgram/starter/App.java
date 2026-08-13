@@ -17,6 +17,15 @@ import com.auth0.jwt.JWT;
 import com.auth0.jwt.algorithms.Algorithm;
 import com.auth0.jwt.exceptions.JWTVerificationException;
 import com.auth0.jwt.exceptions.TokenExpiredException;
+import com.deepgram.DeepgramClient;
+import com.deepgram.core.DeepgramHttpException;
+import com.deepgram.core.ObjectMappers;
+import com.deepgram.resources.read.v1.text.requests.TextAnalyzeRequest;
+import com.deepgram.resources.read.v1.text.types.TextAnalyzeRequestSummarize;
+import com.deepgram.types.ReadV1Request;
+import com.deepgram.types.ReadV1RequestText;
+import com.deepgram.types.ReadV1RequestUrl;
+import com.deepgram.types.ReadV1Response;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.toml.TomlMapper;
@@ -28,13 +37,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -49,9 +52,9 @@ public class App {
     private static final Logger log = LoggerFactory.getLogger(App.class);
     private static final ObjectMapper jsonMapper = new ObjectMapper();
     private static final TomlMapper tomlMapper = new TomlMapper();
-    private static final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
+
+    /** Deepgram Java SDK client — reused across requests; the browser never sees the API key. */
+    private static DeepgramClient deepgram;
 
     // ========================================================================
     // CONFIGURATION
@@ -82,6 +85,9 @@ public class App {
 
         // Load Deepgram API key
         apiKey = loadApiKey(dotenv);
+
+        // Initialize the Deepgram SDK client once, reused across requests
+        deepgram = DeepgramClient.builder().apiKey(apiKey).build();
 
         // Create and configure Javalin app
         Javalin app = Javalin.create(config -> {
@@ -355,46 +361,37 @@ public class App {
                 return;
             }
 
-            // Build Deepgram API URL with query parameters
-            StringBuilder dgUrl = new StringBuilder("https://api.deepgram.com/v1/read?language=");
-            dgUrl.append(URLEncoder.encode(language, StandardCharsets.UTF_8));
+            // Build the Deepgram Read request body — text or url (validated above as exactly one)
+            ReadV1Request readBody;
+            if (url != null && !url.isEmpty()) {
+                readBody = ReadV1Request.of(ReadV1RequestUrl.builder().url(url).build());
+            } else {
+                readBody = ReadV1Request.of(ReadV1RequestText.builder().text(text).build());
+            }
 
+            // Map the requested intelligence features onto the SDK request.
+            // The Read API accepts summarize as v2 (v1 rejected above, "true" -> v2).
+            TextAnalyzeRequest._FinalStage requestStage =
+                    TextAnalyzeRequest.builder().body(readBody).language(language);
             if ("true".equals(summarize) || "v2".equals(summarize)) {
-                dgUrl.append("&summarize=v2");
+                requestStage = requestStage.summarize(TextAnalyzeRequestSummarize.V2);
             }
             if ("true".equals(topics)) {
-                dgUrl.append("&topics=true");
+                requestStage = requestStage.topics(true);
             }
             if ("true".equals(sentiment)) {
-                dgUrl.append("&sentiment=true");
+                requestStage = requestStage.sentiment(true);
             }
             if ("true".equals(intents)) {
-                dgUrl.append("&intents=true");
+                requestStage = requestStage.intents(true);
             }
 
-            // Build request body for Deepgram — send text or url as JSON
-            Map<String, String> dgBody = new LinkedHashMap<>();
-            if (url != null && !url.isEmpty()) {
-                dgBody.put("url", url);
-            } else {
-                dgBody.put("text", text);
-            }
-            String dgBodyJson = jsonMapper.writeValueAsString(dgBody);
-
-            // Call Deepgram Read API
-            HttpRequest dgReq = HttpRequest.newBuilder()
-                    .uri(URI.create(dgUrl.toString()))
-                    .timeout(Duration.ofSeconds(30))
-                    .header("Authorization", "Token " + apiKey)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(dgBodyJson))
-                    .build();
-
-            HttpResponse<String> dgResp = httpClient.send(dgReq, HttpResponse.BodyHandlers.ofString());
-
-            // Handle non-2xx from Deepgram
-            if (dgResp.statusCode() < 200 || dgResp.statusCode() >= 300) {
-                log.error("Deepgram API Error (status {}): {}", dgResp.statusCode(), dgResp.body());
+            // Call the Deepgram Read API via the SDK
+            ReadV1Response readResponse;
+            try {
+                readResponse = deepgram.read().v1().text().analyze(requestStage.build());
+            } catch (DeepgramHttpException e) {
+                log.error("Deepgram API Error (status {}): {}", e.statusCode(), e.body());
                 String errCode = (url != null && !url.isEmpty()) ? "INVALID_URL" : "INVALID_TEXT";
                 String errMsg = (url != null && !url.isEmpty()) ? "Failed to process URL" : "Failed to process text";
                 ctx.status(400);
@@ -402,13 +399,14 @@ public class App {
                 return;
             }
 
-            // Parse Deepgram response to extract results
-            JsonNode dgResult = jsonMapper.readTree(dgResp.body());
-            JsonNode results = dgResult.has("results") ? dgResult.get("results") : jsonMapper.createObjectNode();
+            // Serialize the SDK results into the same JSON shape the frontend expects.
+            // ObjectMappers.JSON_MAPPER is the SDK's mapper, which emits the API wire format
+            // (snake_case, absent Optionals omitted), so `results` matches the raw /v1/read response.
+            JsonNode results = ObjectMappers.JSON_MAPPER.valueToTree(readResponse.getResults());
 
             // Return results
             Map<String, Object> response = new LinkedHashMap<>();
-            response.put("results", jsonMapper.treeToValue(results, Object.class));
+            response.put("results", results);
             ctx.json(response);
 
         } catch (Exception e) {
